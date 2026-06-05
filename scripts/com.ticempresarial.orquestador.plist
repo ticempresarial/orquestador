@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    LaunchAgent para el orquestador ticempresarial.
+
+    Instalar con: bash scripts/install-autostart.sh
+    Desinstalar con: bash scripts/uninstall-autostart.sh
+
+    Asume:
+      - Usuario: datacole
+      - Repo clonado en: /Users/datacole/orquestador/orquestador
+      - venv en: telegram-bot/venv
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ticempresarial.orquestador</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/datacole/orquestador/orquestador/telegram-bot/venv/bin/python</string>
+        <string>/Users/datacole/orquestador/orquestador/telegram-bot/bot.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/datacole/orquestador/orquestador/telegram-bot</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/datacole/orquestador/orquestador/telegram-bot/bot.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/datacole/orquestador/orquestador/telegram-bot/bot.err</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/datacole</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+</dict>
+</plist>

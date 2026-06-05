@@ -67,12 +67,13 @@ Claude Code CLI 2.x
 
 | Fase | Qué hace | Estado |
 |------|----------|--------|
-| **0** | Bridge mínimo Telegram → claude -p → respuesta | En curso |
-| **1** | Intake con preguntas iniciales + brief consolidado | Pendiente |
-| **2** | Deploy de productos a staging local | Pendiente |
+| **0** | Bridge mínimo Telegram → claude -p → respuesta | ✅ v0.1.0 |
+| **0.5** | Autostart con launchd macOS | ✅ v0.2.0 |
+| **1** | Intake con preguntas + brief consolidado en `~/proyectos/<slug>/` | ✅ v0.3.0 |
+| **2** | Deploy de productos a staging local (`/arrancar <slug>`) | Pendiente |
 | **3** | Motor QA con Chrome/Playwright headless | Pendiente |
 | **4** | Auto-corrección de defectos | Pendiente |
-| **5** | Matriz base (i18n, dark mode, etc.) codificada | Pendiente |
+| **5** | Matriz base §3 (i18n, dark mode, etc.) — ya incluida en briefs | ✅ (en Fase 1) |
 | **6** | Paralelismo dinámico según RAM | Pendiente |
 
 ## Instalación en Mac

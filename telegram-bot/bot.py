@@ -46,12 +46,16 @@ from keyboards import (
     BTN_ESTADO,
     BTN_NUEVO,
     BTN_PROYECTOS,
+    BTN_SISTEMA,
     BTN_VERBRIEF,
     MAIN_KEYBOARD,
     proyectos_inline_keyboard,
+    sistema_confirmar_keyboard,
+    sistema_inline_keyboard,
 )
 from slugify import slugify
 from state import StateStore
+from system import health_summary, restart_mac, sleep_mac
 
 # ─────────────────────────────────────────────────────────────────────────
 # Config
@@ -356,6 +360,20 @@ async def _despachar_boton(
         await cmd_cancelar(update, context)
     elif boton == BTN_AYUDA:
         await cmd_start(update, context)
+    elif boton == BTN_SISTEMA:
+        await cmd_sistema(update, context)
+
+
+async def cmd_sistema(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Submenu de acciones del sistema."""
+    user_id = update.effective_user.id
+    if not _is_allowed(user_id):
+        return
+    await update.message.reply_text(
+        "⚙️ *Sistema*\n\nElegí una acción de la Mac:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=sistema_inline_keyboard(),
+    )
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -390,7 +408,55 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text(chunk)
         return
 
+    if data.startswith("sys:"):
+        await _handle_sys_callback(query, data)
+        return
+
     log.warning("callback no reconocido: %s", data)
+
+
+async def _handle_sys_callback(query, data: str) -> None:
+    """Procesa callbacks del sub-menú de sistema."""
+    parts = data.split(":")
+    if len(parts) < 2:
+        return
+    accion = parts[1]
+
+    if accion == "health":
+        await query.message.reply_text("⏳ Generando reporte de salud…")
+        try:
+            resumen = await health_summary()
+        except Exception as e:  # noqa: BLE001
+            await query.message.reply_text(f"❌ Falló health: {e}")
+            return
+        await query.message.reply_text(resumen, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if accion == "cancel":
+        await query.message.reply_text("Cancelado.")
+        return
+
+    # Sleep / Restart con confirmación
+    if accion in ("sleep", "restart"):
+        if len(parts) >= 3 and parts[2] == "ask":
+            etiqueta = {"sleep": "💤 Sleep (suspender)", "restart": "🔄 Restart (reiniciar)"}[accion]
+            await query.message.reply_text(
+                f"¿Confirmás *{etiqueta}*?\n\n"
+                "_Tras la acción el bot se desconecta temporalmente "
+                "y se reconecta cuando la Mac vuelva a estar disponible._",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=sistema_confirmar_keyboard(accion),
+            )
+            return
+        if len(parts) >= 3 and parts[2] == "do":
+            if accion == "sleep":
+                ok, msg = await sleep_mac()
+            else:
+                ok, msg = await restart_mac()
+            await query.message.reply_text(msg)
+            return
+
+    log.warning("sys callback desconocido: %s", data)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -540,6 +606,8 @@ def main() -> None:
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CommandHandler("proyectos", cmd_proyectos))
     app.add_handler(CommandHandler("verbrief", cmd_verbrief))
+    app.add_handler(CommandHandler("sistema", cmd_sistema))
+    app.add_handler(CommandHandler("health", cmd_sistema))  # alias rápido
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
 

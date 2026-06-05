@@ -31,6 +31,7 @@ BTN_VERBRIEF = "📄 Ver brief"
 BTN_ESTADO = "🩺 Estado"
 BTN_CANCELAR = "❌ Cancelar"
 BTN_AYUDA = "❓ Ayuda"
+BTN_SISTEMA = "⚙️ Sistema"
 
 ALL_MENU_BUTTONS = {
     BTN_NUEVO,
@@ -39,6 +40,7 @@ ALL_MENU_BUTTONS = {
     BTN_ESTADO,
     BTN_CANCELAR,
     BTN_AYUDA,
+    BTN_SISTEMA,
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -49,12 +51,39 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(BTN_NUEVO), KeyboardButton(BTN_PROYECTOS)],
         [KeyboardButton(BTN_VERBRIEF), KeyboardButton(BTN_ESTADO)],
-        [KeyboardButton(BTN_CANCELAR), KeyboardButton(BTN_AYUDA)],
+        [KeyboardButton(BTN_CANCELAR), KeyboardButton(BTN_SISTEMA)],
+        [KeyboardButton(BTN_AYUDA)],
     ],
     resize_keyboard=True,
     is_persistent=True,
     input_field_placeholder="Tap un botón o escribí un prompt…",
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Sub-menu inline de Sistema (sleep / restart / health)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def sistema_inline_keyboard() -> InlineKeyboardMarkup:
+    """Acciones del sistema operativo Mac."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🩺 Health (status completo)", callback_data="sys:health")],
+        [
+            InlineKeyboardButton("💤 Sleep", callback_data="sys:sleep:ask"),
+            InlineKeyboardButton("🔄 Restart", callback_data="sys:restart:ask"),
+        ],
+    ])
+
+
+def sistema_confirmar_keyboard(accion: str) -> InlineKeyboardMarkup:
+    """Pide confirmación antes de sleep/restart."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Sí, hacelo", callback_data=f"sys:{accion}:do"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="sys:cancel"),
+        ]
+    ])
 
 
 REMOVE_KEYBOARD = ReplyKeyboardRemove()

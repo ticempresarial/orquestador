@@ -2,6 +2,37 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.6.0] - 2026-06-05
+
+### Added — Power management + Health desde Telegram
+
+- `telegram-bot/system.py`:
+  - `sleep_mac()` → `pmset sleepnow` (sin sudo)
+  - `restart_mac()` → `sudo -n shutdown -r now` (requiere sudoers config)
+  - `health_summary()` → uptime + disco + RAM + servicios críticos
+    (bot/cloudflared/nginx/mariadb) + endpoints (mcperfex, mcdev)
+- `telegram-bot/keyboards.py`:
+  - Nuevo botón `⚙️ Sistema` en MAIN_KEYBOARD
+  - `sistema_inline_keyboard()` con 3 acciones (Health / Sleep / Restart)
+  - `sistema_confirmar_keyboard()` con Sí/No para acciones destructivas
+- `telegram-bot/bot.py`:
+  - Handler `cmd_sistema` (alias: `/sistema`, `/health`)
+  - `_handle_sys_callback` procesa `sys:health`, `sys:sleep:ask|do`, `sys:restart:ask|do`
+  - Sleep y restart piden confirmación inline antes de ejecutar
+  - Si restart falla por sudo, el mensaje explica cómo configurar sudoers
+
+### Requerido (configuración manual)
+
+Para que `/restart` funcione sin pedir password, ejecutar UNA vez en SSH:
+
+```bash
+echo "datacole ALL=(ALL) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown" \
+  | sudo tee /etc/sudoers.d/datacole-power \
+  && sudo chmod 0440 /etc/sudoers.d/datacole-power
+```
+
+`/sleep` y `/health` funcionan sin configuración adicional.
+
 ## [0.5.0] - 2026-06-05
 
 ### Added — intake con contexto rico por stack

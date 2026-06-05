@@ -434,7 +434,13 @@ def main() -> None:
     app.add_handler(CommandHandler("verbrief", cmd_verbrief))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # drop_pending_updates=True descarta mensajes pendientes que llegaron mientras
+    # el bot estaba caído o durante reinicios del launchd. Evita responder con
+    # código viejo a mensajes que estaban en queue de Telegram.
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":

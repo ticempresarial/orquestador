@@ -2,6 +2,19 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.3.1] - 2026-06-05
+
+### Fixed
+
+- `bot.py` ahora arranca con `drop_pending_updates=True`.
+  Síntoma previo: tras reload del launchd con código nuevo, el bot
+  procesaba mensajes que habían quedado en queue de Telegram durante
+  el reinicio. El resultado era que `/start` respondía con el formato
+  de la versión anterior (porque el mensaje original había llegado
+  cuando v0.1.0 estaba activo).
+  Fix: descartar todos los updates pendientes al arrancar. Cada
+  versión solo procesa mensajes nuevos desde su inicio.
+
 ## [0.3.0] - 2026-06-05
 
 ### Added — Fase 1: intake estructurado + brief consolidado

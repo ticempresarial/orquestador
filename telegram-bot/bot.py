@@ -33,11 +33,21 @@ from telegram.ext import (
     filters,
 )
 
+import re as _re
+
 from intake import (
     analizar_y_preguntar,
     consolidar_brief,
     parsear_respuestas,
     render_preguntas_para_telegram,
+)
+
+# Auto-detección: si el texto matchea esto, lo tratamos como schedule
+# en vez de pasarlo a Claude libre. Cubre "sleep HH:MM", "wake HH:MM",
+# "cancelar", "ver", combos.
+_SCHEDULE_AUTODETECT = _re.compile(
+    r"^\s*(sleep|wake|wakeup|despertar|cancelar|cancel|ver|status|list)\b",
+    _re.IGNORECASE,
 )
 from keyboards import (
     ALL_MENU_BUTTONS,
@@ -348,6 +358,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if estado == "awaiting_schedule_input":
+        await _flow_recibir_schedule(update, user_id, texto)
+        return
+
+    # idle o done: auto-detect de patrones sleep/wake antes de ir a Claude libre
+    if _SCHEDULE_AUTODETECT.match(texto):
+        log.info("auto-detect schedule pattern en texto: %s", texto[:50])
         await _flow_recibir_schedule(update, user_id, texto)
         return
 

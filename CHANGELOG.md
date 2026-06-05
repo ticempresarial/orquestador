@@ -2,6 +2,21 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.7.2] - 2026-06-05
+
+### Added — Auto-detección de patrones sleep/wake
+
+Si en idle/done el usuario manda directamente `sleep 02:00`, `wake 07:00`,
+`sleep 23:30 wake 06:30`, `cancelar`, `ver`, etc., el bot lo procesa como
+schedule sin necesitar tappear el botón inline ni usar `/programar`.
+
+Regex de detección (case-insensitive, empieza con):
+```
+^\s*(sleep|wake|wakeup|despertar|cancelar|cancel|ver|status|list)\b
+```
+
+Si el texto no matchea → sigue al modo libre Claude como antes.
+
 ## [0.7.1] - 2026-06-05
 
 ### Fixed — Sleep programado ahora FUERZA la suspensión

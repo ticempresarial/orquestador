@@ -20,6 +20,8 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from stack_context import all_stacks, get_context_for_stack
+
 log = logging.getLogger("orquestador.intake")
 
 
@@ -28,41 +30,74 @@ log = logging.getLogger("orquestador.intake")
 # ─────────────────────────────────────────────────────────────────────────
 
 
-ANALIZAR_PROMPT_TEMPLATE = """\
-Sos el agente INTAKE del orquestador de Jose Delgado (ticempresarial).
-Jose acaba de mandar el prompt inicial de un proyecto nuevo. Tu trabajo:
+DETECTAR_STACK_TEMPLATE = """\
+Sos el agente que detecta el stack tecnológico de un prompt de proyecto.
 
-1. Detectar el STACK probable (entre: Perfex, CI3, Node, Laravel, WP, Otro).
-2. Proponer un nombre comercial corto.
-3. Proponer un slug (snake o kebab, sin espacios, ASCII).
-4. Hacer entre 4 y 8 preguntas que resuelvan ambigüedades, contradicciones,
-   huecos o decisiones de negocio. NO preguntes cosas que ya están claras.
-   Cada pregunta debe ser concreta, accionable, con ejemplo si ayuda.
+Stacks posibles: Perfex, CI3, Node, Laravel, WP, Otro.
 
-Devolve SOLAMENTE un JSON entre los marcadores <JSON> y </JSON>.
-NO incluyas texto antes ni después del JSON. NO uses markdown code fence.
-NO expliques nada.
+Devolve SOLAMENTE un JSON entre <JSON> y </JSON>. NO escribas texto antes ni
+después. NO uses markdown code fence.
 
-Esquema:
 <JSON>
 {{
   "stack_detectado": "Perfex" | "CI3" | "Node" | "Laravel" | "WP" | "Otro",
-  "nombre_sugerido": "string corto",
-  "slug": "kebab-case-ascii",
+  "razon_breve": "1 oración explicando por qué",
+  "nombre_sugerido": "Nombre comercial corto del producto",
+  "slug": "kebab-case-ascii"
+}}
+</JSON>
+
+Prompt:
+---
+{prompt_original}
+---
+"""
+
+
+ANALIZAR_PROMPT_TEMPLATE = """\
+Sos el agente INTAKE del orquestador de Jose Delgado (ticempresarial).
+Jose mandó un prompt para un proyecto nuevo. YA detectamos el stack:
+
+  Stack: {stack_detectado}
+  Nombre sugerido: {nombre_sugerido}
+  Slug: {slug}
+
+**CRÍTICO**: leé el contexto del stack abajo. Ese contexto te dice EXACTAMENTE
+qué TRAE el stack de fábrica y qué tipo de preguntas SÍ son útiles vs cuáles
+son obvias y molestan al usuario.
+
+REGLAS NO NEGOCIABLES:
+1. NO hagas preguntas marcadas como "PREGUNTAS MALAS" en el contexto.
+2. SÍ hacé preguntas alineadas a "PREGUNTAS BUENAS" pero adaptadas al proyecto.
+3. Mínimo 4, máximo 7 preguntas. Mejor pocas y agudas que muchas obvias.
+4. Cada pregunta debe clarificar algo del MÓDULO/PRODUCTO NUEVO, no de la
+   infraestructura del stack base.
+5. Incluí un ejemplo concreto de respuesta cuando ayude.
+
+============ CONTEXTO DEL STACK: {stack_detectado} ============
+
+{stack_context}
+
+============ FIN CONTEXTO ============
+
+PROMPT ORIGINAL DE JOSE:
+---
+{prompt_original}
+---
+
+Generá las preguntas. Devolve SOLAMENTE un JSON entre <JSON> y </JSON>:
+
+<JSON>
+{{
   "preguntas": [
     {{
       "id": "P1",
-      "texto": "pregunta clara",
-      "ejemplo_respuesta": "ejemplo opcional"
+      "texto": "pregunta concreta sobre el módulo NUEVO",
+      "ejemplo_respuesta": "ejemplo de respuesta esperada"
     }}
   ]
 }}
 </JSON>
-
-Prompt original de Jose:
----
-{prompt_original}
----
 """
 
 
@@ -214,32 +249,76 @@ async def analizar_y_preguntar(
     claude_bin: str = "claude",
     timeout: int = 300,
 ) -> dict[str, Any]:
-    """Devuelve dict con stack_detectado, nombre_sugerido, slug, preguntas[]."""
-    prompt = ANALIZAR_PROMPT_TEMPLATE.format(prompt_original=prompt_original)
-    ok, output = await _run_claude(prompt, workdir, claude_bin, timeout)
+    """Dos llamadas:
+       1) Detectar stack (corta, rápida).
+       2) Con stack detectado, generar preguntas usando el contexto rico
+          del stack (NO preguntas obvias, sí preguntas agudas del módulo nuevo).
+    """
+    # ----- Fase 1: detectar stack -----
+    prompt_detect = DETECTAR_STACK_TEMPLATE.format(prompt_original=prompt_original)
+    ok, output_detect = await _run_claude(prompt_detect, workdir, claude_bin, timeout)
     if not ok:
-        raise RuntimeError(f"claude falló al analizar: {output}")
+        raise RuntimeError(f"claude falló al detectar stack: {output_detect}")
 
-    json_str = _extract_between(output, "<JSON>", "</JSON>")
-    if not json_str:
-        # Fallback: a veces Claude olvida los tags. Intentar parsear todo el output.
-        json_str = output
-
+    detect_json = _extract_between(output_detect, "<JSON>", "</JSON>")
+    if not detect_json:
+        detect_json = output_detect
     try:
-        data = json.loads(json_str)
+        detect_data = json.loads(detect_json)
     except json.JSONDecodeError as e:
         raise RuntimeError(
-            f"JSON inválido del intake: {e}\n\nOutput crudo:\n{output[:500]}"
+            f"JSON inválido al detectar stack: {e}\n\nOutput:\n{output_detect[:500]}"
         ) from e
 
-    # Validaciones mínimas
-    for key in ("stack_detectado", "nombre_sugerido", "slug", "preguntas"):
-        if key not in data:
-            raise RuntimeError(f"Falta campo '{key}' en respuesta de intake")
-    if not isinstance(data["preguntas"], list) or not data["preguntas"]:
-        raise RuntimeError("Sin preguntas en respuesta de intake")
+    stack_detectado = detect_data.get("stack_detectado", "Otro")
+    if stack_detectado not in all_stacks():
+        log.warning("stack desconocido '%s' → fallback a Otro", stack_detectado)
+        stack_detectado = "Otro"
 
-    return data
+    nombre_sugerido = detect_data.get("nombre_sugerido", "Producto Nuevo")
+    slug = detect_data.get("slug", "producto-nuevo")
+
+    log.info(
+        "intake: detectado stack=%s nombre=%s slug=%s",
+        stack_detectado, nombre_sugerido, slug,
+    )
+
+    # ----- Fase 2: generar preguntas con contexto del stack -----
+    stack_context_text = get_context_for_stack(stack_detectado)
+    prompt_analizar = ANALIZAR_PROMPT_TEMPLATE.format(
+        prompt_original=prompt_original,
+        stack_detectado=stack_detectado,
+        nombre_sugerido=nombre_sugerido,
+        slug=slug,
+        stack_context=stack_context_text,
+    )
+    ok, output_analizar = await _run_claude(
+        prompt_analizar, workdir, claude_bin, timeout
+    )
+    if not ok:
+        raise RuntimeError(f"claude falló al analizar: {output_analizar}")
+
+    analizar_json = _extract_between(output_analizar, "<JSON>", "</JSON>")
+    if not analizar_json:
+        analizar_json = output_analizar
+    try:
+        analizar_data = json.loads(analizar_json)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"JSON inválido al analizar: {e}\n\nOutput:\n{output_analizar[:500]}"
+        ) from e
+
+    preguntas = analizar_data.get("preguntas")
+    if not isinstance(preguntas, list) or not preguntas:
+        raise RuntimeError("Sin preguntas en respuesta de intake (fase 2)")
+
+    return {
+        "stack_detectado": stack_detectado,
+        "nombre_sugerido": nombre_sugerido,
+        "slug": slug,
+        "preguntas": preguntas,
+        "razon_stack": detect_data.get("razon_breve", ""),
+    }
 
 
 async def consolidar_brief(
@@ -325,9 +404,14 @@ def render_preguntas_para_telegram(data: dict[str, Any]) -> str:
     out = [
         f"📋 *Intake — {data['nombre_sugerido']}*",
         f"Stack detectado: *{data['stack_detectado']}*",
+    ]
+    razon = data.get("razon_stack")
+    if razon:
+        out.append(f"_{razon}_")
+    out += [
         f"Slug propuesto: `{data['slug']}`",
         "",
-        f"Tengo {len(data['preguntas'])} preguntas para clarificar:",
+        f"Tengo {len(data['preguntas'])} preguntas para clarificar el módulo NUEVO:",
         "",
     ]
     for p in data["preguntas"]:

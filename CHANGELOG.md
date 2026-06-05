@@ -2,6 +2,41 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.5.0] - 2026-06-05
+
+### Added — intake con contexto rico por stack
+
+**Problema resuelto**: el intake hacía preguntas obvias (auth, roles, i18n,
+DB) que ya están resueltas por el stack base. El usuario quedaba abrumado
+con preguntas que cualquier dev de Perfex/WP/Laravel ya da por hecho.
+
+- `telegram-bot/stack_context.py` (nuevo, ~22 KB):
+  - `PERFEX_CONTEXT`: detalle de entidades nativas (customers, leads, staff,
+    invoices, etc.), infraestructura (hooks, i18n, permissions, etc.),
+    patrón de módulo (`modules/<nombre>/`), preguntas BUENAS vs MALAS.
+  - `WP_CONTEXT`: WordPress core + WooCommerce ecosystem.
+  - `LARAVEL_CONTEXT`: Laravel 12 + Livewire + Tailwind v4 (estilo MailTrixy).
+  - `CI3_CONTEXT`: CI3 standalone (NO Perfex).
+  - `NODE_CONTEXT`: Next.js App Router + Supabase + shadcn.
+  - `GENERIC_CONTEXT`: fallback para stacks no detectados.
+- `telegram-bot/intake.py`:
+  - `analizar_y_preguntar` ahora hace **2 llamadas a Claude**:
+    1. Detectar stack (corta, JSON con stack_detectado + nombre + slug).
+    2. Con stack detectado, generar preguntas embed-eando el contexto
+       rico del stack en el prompt.
+  - El segundo prompt es explícito: "NO hagas preguntas MALAS, SÍ hacé las
+    BUENAS según el contexto". Reduce la cantidad de preguntas obvias.
+  - Devuelve nuevo campo `razon_stack` con la justificación del LLM.
+- `render_preguntas_para_telegram` muestra el `razon_stack` en italics
+  debajo del stack detectado.
+
+### Notas
+
+- El contexto vive embed en el prompt (~3-4 KB por stack). Acepta hasta
+  10K tokens de extra context sin problema para Claude.
+- A futuro (Fase 2+), esto puede leer los repos team-perfex/team-wp/etc.
+  directamente desde el filesystem para tener contexto aún más actualizado.
+
 ## [0.3.1] - 2026-06-05
 
 ### Fixed

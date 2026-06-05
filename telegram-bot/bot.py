@@ -26,6 +26,7 @@ from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -37,6 +38,17 @@ from intake import (
     consolidar_brief,
     parsear_respuestas,
     render_preguntas_para_telegram,
+)
+from keyboards import (
+    ALL_MENU_BUTTONS,
+    BTN_AYUDA,
+    BTN_CANCELAR,
+    BTN_ESTADO,
+    BTN_NUEVO,
+    BTN_PROYECTOS,
+    BTN_VERBRIEF,
+    MAIN_KEYBOARD,
+    proyectos_inline_keyboard,
 )
 from slugify import slugify
 from state import StateStore
@@ -95,9 +107,18 @@ def _split_message(text: str, limit: int = TELEGRAM_MSG_LIMIT) -> list[str]:
     return chunks
 
 
-async def _send(update: Update, text: str, parse_mode: str | None = None) -> None:
-    for chunk in _split_message(text):
-        await update.message.reply_text(chunk, parse_mode=parse_mode)
+async def _send(
+    update: Update,
+    text: str,
+    parse_mode: str | None = None,
+    reply_markup=None,
+) -> None:
+    """Manda 1+ chunks. reply_markup solo en el último para no spamear teclados."""
+    chunks = _split_message(text)
+    last = len(chunks) - 1
+    for i, chunk in enumerate(chunks):
+        markup = reply_markup if i == last else None
+        await update.message.reply_text(chunk, parse_mode=parse_mode, reply_markup=markup)
 
 
 async def _run_claude_libre(prompt: str) -> tuple[bool, str]:
@@ -141,17 +162,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not _is_allowed(user_id):
         return
-    await _send(
-        update,
-        "Hola Jose. Orquestador ticempresarial listo.\n\n"
-        "Comandos:\n"
-        "  /nuevo       iniciar proyecto (intake con preguntas → brief)\n"
-        "  /cancelar    cancelar proyecto en curso\n"
-        "  /proyectos   listar briefs guardados\n"
-        "  /verbrief    ver último brief generado\n"
-        "  /estado      salud del bot\n\n"
-        "Mensaje libre = modo Fase 0 (paso directo a claude -p).",
+    texto = (
+        "👋 *Orquestador ticempresarial*\n\n"
+        "Tocá uno de los botones del teclado, o escribime libre y paso a "
+        "Claude Code directo (Fase 0).\n\n"
+        "*Botones del teclado:*\n"
+        f"  {BTN_NUEVO} — arranca un proyecto con intake guiado\n"
+        f"  {BTN_PROYECTOS} — lista briefs guardados (tappeás uno y lo abre)\n"
+        f"  {BTN_VERBRIEF} — muestra el brief del proyecto activo\n"
+        f"  {BTN_ESTADO} — salud del bot + tu estado\n"
+        f"  {BTN_CANCELAR} — cancela proyecto en curso\n"
+        f"  {BTN_AYUDA} — esta ayuda\n\n"
+        "_Tip: cualquier texto libre se procesa con Claude en cuanto estés idle._"
     )
+    await _send(update, texto, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -169,7 +193,7 @@ async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
     if st["estado"] != "idle" and st.get("proyecto_slug"):
         msg += f"\nProyecto activo: {st['proyecto_slug']}"
-    await _send(update, msg)
+    await _send(update, msg, reply_markup=MAIN_KEYBOARD)
 
 
 async def cmd_nuevo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,7 +239,12 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     slug = st.get("proyecto_slug") or "(sin slug)"
     await store.reset(user_id)
-    await _send(update, f"❌ Proyecto `{slug}` cancelado. Volvés a idle.", parse_mode=ParseMode.MARKDOWN)
+    await _send(
+        update,
+        f"❌ Proyecto `{slug}` cancelado. Volvés a idle.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 async def cmd_proyectos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,18 +252,31 @@ async def cmd_proyectos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not _is_allowed(user_id):
         return
     if not PROYECTOS_DIR.exists():
-        await _send(update, "Todavía no hay proyectos. Empezá uno con /nuevo.")
+        await _send(update, "Todavía no hay proyectos. Tocá 📝 Nuevo para empezar.")
         return
     dirs = sorted([d for d in PROYECTOS_DIR.iterdir() if d.is_dir()])
     if not dirs:
-        await _send(update, "Todavía no hay proyectos. Empezá uno con /nuevo.")
+        await _send(update, "Todavía no hay proyectos. Tocá 📝 Nuevo para empezar.")
         return
-    lines = ["📂 *Proyectos*\n"]
-    for d in dirs:
-        brief = d / "brief.md"
-        marker = "✅" if brief.exists() else "⏳"
-        lines.append(f"{marker} `{d.name}`")
-    await _send(update, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    # Resumen como texto + botones inline para abrir cada brief
+    slugs_con_brief = [d.name for d in dirs if (d / "brief.md").exists()]
+    slugs_sin_brief = [d.name for d in dirs if not (d / "brief.md").exists()]
+
+    header = "📂 *Proyectos*\n\n"
+    if slugs_sin_brief:
+        header += "⏳ _Sin brief consolidado:_\n"
+        for s in slugs_sin_brief:
+            header += f"  • `{s}`\n"
+        header += "\n"
+    if slugs_con_brief:
+        header += "✅ Tocá uno para ver su brief:"
+
+    await update.message.reply_text(
+        header,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=proyectos_inline_keyboard(slugs_con_brief or [d.name for d in dirs]),
+    )
 
 
 async def cmd_verbrief(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -249,18 +291,23 @@ async def cmd_verbrief(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         st = await store.get(user_id)
         slug = st.get("proyecto_slug")
     if not slug:
-        await _send(update, "No hay proyecto. Usá `/verbrief <slug>` o iniciá uno con /nuevo.")
+        # Sin slug, mostramos el inline keyboard de proyectos disponibles
+        await cmd_proyectos(update, context)
         return
+    await _enviar_brief(update, slug)
+
+
+async def _enviar_brief(update: Update, slug: str) -> None:
     brief_path = PROYECTOS_DIR / slug / "brief.md"
     if not brief_path.exists():
         await _send(update, f"No encuentro brief en {brief_path}.")
         return
     contenido = brief_path.read_text(encoding="utf-8")
-    await _send(update, contenido)
+    await _send(update, contenido, reply_markup=MAIN_KEYBOARD)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Router según estado del usuario."""
+    """Router según estado del usuario. Botones del MAIN_KEYBOARD se interceptan antes."""
     user_id = update.effective_user.id
     if not _is_allowed(user_id):
         log.warning("rechazado user_id=%s", user_id)
@@ -268,6 +315,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     texto = (update.message.text or "").strip()
     if not texto:
+        return
+
+    # Botones del teclado tienen prioridad sobre cualquier estado.
+    # Sin esto, en awaiting_prompt el bot trataría "📝 Nuevo" como el prompt inicial.
+    if texto in ALL_MENU_BUTTONS:
+        await _despachar_boton(update, context, texto)
         return
 
     st = await store.get(user_id)
@@ -283,6 +336,61 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # idle o done => modo libre Fase 0
     await _flow_libre(update, texto)
+
+
+async def _despachar_boton(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    boton: str,
+) -> None:
+    """Mapea cada botón del MAIN_KEYBOARD al comando equivalente."""
+    if boton == BTN_NUEVO:
+        await cmd_nuevo(update, context)
+    elif boton == BTN_PROYECTOS:
+        await cmd_proyectos(update, context)
+    elif boton == BTN_VERBRIEF:
+        await cmd_verbrief(update, context)
+    elif boton == BTN_ESTADO:
+        await cmd_estado(update, context)
+    elif boton == BTN_CANCELAR:
+        await cmd_cancelar(update, context)
+    elif boton == BTN_AYUDA:
+        await cmd_start(update, context)
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Maneja taps en inline buttons (lista de proyectos, etc.)."""
+    query = update.callback_query
+    if query is None:
+        return
+    user_id = query.from_user.id
+    if not _is_allowed(user_id):
+        await query.answer("no autorizado", show_alert=False)
+        return
+
+    # answer() rápido para que Telegram pare el spinner
+    await query.answer()
+    data = query.data or ""
+
+    if data == "noop":
+        return
+
+    if data.startswith("verbrief:"):
+        slug = data.split(":", 1)[1].strip()
+        brief_path = PROYECTOS_DIR / slug / "brief.md"
+        if not brief_path.exists():
+            await query.message.reply_text(f"No encuentro brief en {brief_path}.")
+            return
+        contenido = brief_path.read_text(encoding="utf-8")
+        # Cabecera contextual + brief en chunks
+        await query.message.reply_text(
+            f"📄 *{slug}*", parse_mode=ParseMode.MARKDOWN
+        )
+        for chunk in _split_message(contenido):
+            await query.message.reply_text(chunk)
+        return
+
+    log.warning("callback no reconocido: %s", data)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -392,11 +500,11 @@ async def _flow_recibir_respuestas(
         f"Proyecto: `{st['proyecto_slug']}`\n"
         f"Stack: {st['stack_detectado']}\n"
         f"Carpeta: `{proyecto_dir}`\n\n"
-        f"Mandame `/verbrief` para verlo completo.\n\n"
+        f"Tocá 📄 *Ver brief* abajo, o tappeás el proyecto desde 📂 *Proyectos*.\n\n"
         f"Próximo paso (Fase 2 — no implementado aún):\n"
         f"`/arrancar {st['proyecto_slug']}` invocará architect + builder."
     )
-    await _send(update, resumen, parse_mode=ParseMode.MARKDOWN)
+    await _send(update, resumen, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
 async def _flow_libre(update: Update, prompt: str) -> None:
@@ -433,6 +541,7 @@ def main() -> None:
     app.add_handler(CommandHandler("proyectos", cmd_proyectos))
     app.add_handler(CommandHandler("verbrief", cmd_verbrief))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CallbackQueryHandler(handle_callback))
 
     # drop_pending_updates=True descarta mensajes pendientes que llegaron mientras
     # el bot estaba caído o durante reinicios del launchd. Evita responder con

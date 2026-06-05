@@ -2,6 +2,35 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.7.1] - 2026-06-05
+
+### Fixed — Sleep programado ahora FUERZA la suspensión
+
+**Problema previo**: `pmset schedule sleep` programa un sleep "suave" que
+respeta las assertions activas del sistema (mouse en uso, SSH abierta,
+display on, etc.). En test real, macOS mostraba el aviso de 60s pero al
+cumplirse el plazo, **cancelaba silenciosamente** el sleep si había
+cualquier actividad. Imposible de usar para "duerme a las 02:00 sí o sí".
+
+**Fix**: ahora `schedule_sleep_at` ejecuta dos cosas en paralelo:
+1. `sudo pmset schedule sleep <ts>` — para que aparezca en `pmset -g sched`
+   y muestre el aviso 60s antes.
+2. Background bash con marker: `nohup bash -c "sleep N && pmset sleepnow"`.
+   `pmset sleepnow` IGNORA assertions y fuerza el sleep aunque haya mouse,
+   SSH, display on, etc.
+
+El background process se identifica con marker
+`orquestador-force-sleep=<unix_ts>` en el comando, para poder cancelarlo
+luego con `pkill -f`.
+
+### Cambios
+
+- `system.py`:
+  - `schedule_sleep_at` ahora hace híbrido (pmset + background bash).
+  - `cancel_all_schedules` también limpia procesos background.
+  - `list_schedules` ahora muestra schedules pmset + sleeps forzados
+    pendientes con segundos restantes.
+
 ## [0.7.0] - 2026-06-05
 
 ### Added — Programación de sleep / wake desde Telegram

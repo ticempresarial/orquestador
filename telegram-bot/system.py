@@ -238,17 +238,65 @@ def _pmset_timestamp(dt: datetime) -> str:
     return dt.strftime("%m/%d/%y %H:%M:%S")
 
 
+# Marker para identificar nuestros procesos background de sleep forzado
+_FORCE_SLEEP_MARKER = "orquestador-force-sleep"
+
+
 async def schedule_sleep_at(when: datetime) -> tuple[bool, str]:
-    """sudo pmset schedule sleep 'MM/dd/yy HH:mm:ss'."""
+    """Programa sleep FORZADO a la hora indicada (ignora assertions).
+
+    Estrategia híbrida:
+      1. `pmset schedule sleep` — pone el evento en el listado oficial
+         (visible con `pmset -g sched`) y muestra el aviso 60s antes.
+      2. Background bash `sleep N && pmset sleepnow` — fuerza el sleep
+         ignorando assertions (mouse activo, SSH abierta, display on).
+
+    Si la Mac está dormida cuando se cumple la hora, ambos no hacen daño.
+    Si la Mac está despierta con actividad, el background gana (sleepnow
+    no respeta assertions).
+    """
+    now = datetime.now()
+    delay = int((when - now).total_seconds())
+    if delay < 5:
+        return False, f"❌ La hora {when.strftime('%H:%M')} ya pasó o está muy próxima."
+
+    # 1. Schedule oficial (para visibilidad + warning 60s)
     ts = _pmset_timestamp(when)
     code, _, stderr = await _run(
         ["sudo", "-n", "pmset", "schedule", "sleep", ts], timeout=10
     )
     if code != 0:
         if "password" in stderr.lower() or "sudo" in stderr.lower():
-            return False, "❌ sudo pidió password. Configurá sudoers para pmset (ver README)."
+            return False, "❌ sudo pidió password. Configurá sudoers para pmset."
         return False, stderr or f"pmset exit {code}"
-    return True, f"💤 Sleep programado para *{when.strftime('%Y-%m-%d %H:%M')}*"
+
+    # 2. Background bash forzado (ignora assertions)
+    timestamp = int(when.timestamp())
+    cmd_str = (
+        f"sleep {delay} && /usr/bin/pmset sleepnow # {_FORCE_SLEEP_MARKER}={timestamp}"
+    )
+    try:
+        await asyncio.create_subprocess_shell(
+            f"nohup bash -c {shlex_quote(cmd_str)} >/dev/null 2>&1 &",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except Exception as e:  # noqa: BLE001
+        return True, (
+            f"💤 Sleep programado *{when.strftime('%Y-%m-%d %H:%M')}* (suave).\n"
+            f"⚠️ Forzado falló: {e}. Si hay actividad la Mac puede no dormir."
+        )
+
+    return True, (
+        f"💤 Sleep *FORZADO* programado para *{when.strftime('%Y-%m-%d %H:%M')}*.\n"
+        "_Va a dormir aunque haya actividad (mouse, SSH, etc)._"
+    )
+
+
+def shlex_quote(s: str) -> str:
+    """Quote para bash. Equivalente a shlex.quote pero sin import circular."""
+    import shlex
+    return shlex.quote(s)
 
 
 async def schedule_wake_at(when: datetime) -> tuple[bool, str]:
@@ -265,40 +313,70 @@ async def schedule_wake_at(when: datetime) -> tuple[bool, str]:
 
 
 async def cancel_all_schedules() -> tuple[bool, str]:
-    """sudo pmset schedule cancelall."""
+    """Cancela:
+       - schedules de pmset (sudo pmset schedule cancelall)
+       - procesos background de sleep forzado (pkill por marker)
+    """
+    # 1. pmset oficial
     code, _, stderr = await _run(
         ["sudo", "-n", "pmset", "schedule", "cancelall"], timeout=10
     )
-    if code != 0:
-        if "password" in stderr.lower() or "sudo" in stderr.lower():
-            return False, "❌ sudo pidió password. Configurá sudoers para pmset."
-        return False, stderr or f"pmset exit {code}"
-    return True, "🗑️ Todas las programaciones canceladas."
+    pmset_ok = code == 0
+    if not pmset_ok and ("password" in stderr.lower() or "sudo" in stderr.lower()):
+        return False, "❌ sudo pidió password. Configurá sudoers para pmset."
+
+    # 2. Background forzados (pkill por marker)
+    code_pkill, _, _ = await _run(["pkill", "-f", _FORCE_SLEEP_MARKER], timeout=5)
+    killed_bg = code_pkill == 0
+
+    msg = "🗑️ Cancelado:"
+    if pmset_ok:
+        msg += "\n  ✅ schedules oficiales de pmset"
+    else:
+        msg += f"\n  ❌ pmset: {stderr or 'error'}"
+    if killed_bg:
+        msg += "\n  ✅ procesos background de sleep forzado"
+    else:
+        msg += "\n  (sin background de sleep activo)"
+    return pmset_ok, msg
 
 
 async def list_schedules() -> str:
-    """pmset -g sched (no requiere sudo)."""
+    """Lista schedules de pmset + background de sleep forzado."""
+    parts = ["📅 *Programaciones activas*", ""]
+
+    # 1. pmset official
     code, stdout, stderr = await _run(["pmset", "-g", "sched"], timeout=5)
     if code != 0:
-        return f"❌ No pude listar schedule: {stderr or 'error'}"
+        parts.append(f"❌ pmset: {stderr or 'error'}")
+    else:
+        lines = stdout.strip().split("\n") if stdout else []
+        if not lines or len(lines) <= 1:
+            parts.append("_Sin schedules pmset oficiales._")
+        else:
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts.append(f"  {line}")
 
-    lines = stdout.strip().split("\n") if stdout else []
-    if not lines or len(lines) <= 1:
-        return "📅 Sin programaciones activas."
+    # 2. Background forzados (timestamps en el comando)
+    code_bg, stdout_bg, _ = await _run(["pgrep", "-fl", _FORCE_SLEEP_MARKER], timeout=5)
+    if code_bg == 0 and stdout_bg.strip():
+        parts.append("")
+        parts.append("*Sleep FORZADO programado:*")
+        for line in stdout_bg.strip().split("\n"):
+            # Linea tipo "12345 bash -c sleep 3600 && pmset sleepnow # marker=1717604280"
+            m = re.search(rf"{_FORCE_SLEEP_MARKER}=(\d+)", line)
+            if m:
+                ts = int(m.group(1))
+                dt = datetime.fromtimestamp(ts)
+                segundos_restantes = int((dt - datetime.now()).total_seconds())
+                parts.append(
+                    f"  💤 {dt.strftime('%Y-%m-%d %H:%M')} (en {segundos_restantes}s)"
+                )
 
-    # pmset -g sched output:
-    #   Repeating power events:
-    #     wakeorpoweron at 07:00:00 every day
-    #   Scheduled power events:
-    #     [0]  wakeorpoweron at 06/06/26 07:00:00
-    #     [1]  sleep at 06/06/26 02:00:00
-    out = ["📅 *Programaciones activas*", ""]
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        out.append(f"  {line}")
-    return "\n".join(out)
+    return "\n".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────────────────

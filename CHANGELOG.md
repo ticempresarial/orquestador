@@ -2,6 +2,34 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.7.3] - 2026-06-05
+
+### Fixed — Schedules vencidos ya no dejan residuo
+
+**Problema previo**: `schedule_sleep_at` hacía dos cosas:
+1. `pmset schedule sleep <ts>` para visibilidad oficial
+2. Background bash con `pmset sleepnow` para forzar
+
+El (1) dejaba el schedule en la lista de `pmset -g sched` ANTES de
+ejecutarse y QUEDABA PEGADO después de ejecutarse. macOS no lo limpia
+automáticamente y a veces re-dispara el aviso "Mac va a dormir en 60s"
+horas después confundiendo al usuario.
+
+**Fix**: ahora `schedule_sleep_at` usa SOLO el background bash. No hay
+schedule oficial pmset para sleep, no hay residuo.
+
+El wake sí sigue usando `pmset schedule wakeorpoweron` porque cuando la
+Mac está dormida no hay proceso user-space que pueda despertarla — debe
+ser via pmset oficial.
+
+### Cambios
+
+- `system.py::schedule_sleep_at`: simplificado a una sola estrategia
+  (background bash). El mensaje de confirmación incluye delta legible
+  ("en 2h 30m").
+- `list_schedules`: ya soportaba mostrar background processes —
+  visualización sin cambios.
+
 ## [0.7.2] - 2026-06-05
 
 ### Added — Auto-detección de patrones sleep/wake

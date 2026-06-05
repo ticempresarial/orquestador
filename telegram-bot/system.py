@@ -245,32 +245,20 @@ _FORCE_SLEEP_MARKER = "orquestador-force-sleep"
 async def schedule_sleep_at(when: datetime) -> tuple[bool, str]:
     """Programa sleep FORZADO a la hora indicada (ignora assertions).
 
-    Estrategia híbrida:
-      1. `pmset schedule sleep` — pone el evento en el listado oficial
-         (visible con `pmset -g sched`) y muestra el aviso 60s antes.
-      2. Background bash `sleep N && pmset sleepnow` — fuerza el sleep
-         ignorando assertions (mouse activo, SSH abierta, display on).
+    Usa SOLO background bash: `sleep N && pmset sleepnow`.
 
-    Si la Mac está dormida cuando se cumple la hora, ambos no hacen daño.
-    Si la Mac está despierta con actividad, el background gana (sleepnow
-    no respeta assertions).
+    No usamos `pmset schedule sleep` porque deja residuo después de ejecutarse
+    (los schedules vencidos quedan en la lista de macOS hasta el próximo reboot
+    y a veces re-disparan avisos confusos).
+
+    `pmset sleepnow` ignora assertions del sistema (mouse, SSH, display),
+    así que duerme aunque haya actividad.
     """
     now = datetime.now()
     delay = int((when - now).total_seconds())
     if delay < 5:
         return False, f"❌ La hora {when.strftime('%H:%M')} ya pasó o está muy próxima."
 
-    # 1. Schedule oficial (para visibilidad + warning 60s)
-    ts = _pmset_timestamp(when)
-    code, _, stderr = await _run(
-        ["sudo", "-n", "pmset", "schedule", "sleep", ts], timeout=10
-    )
-    if code != 0:
-        if "password" in stderr.lower() or "sudo" in stderr.lower():
-            return False, "❌ sudo pidió password. Configurá sudoers para pmset."
-        return False, stderr or f"pmset exit {code}"
-
-    # 2. Background bash forzado (ignora assertions)
     timestamp = int(when.timestamp())
     cmd_str = (
         f"sleep {delay} && /usr/bin/pmset sleepnow # {_FORCE_SLEEP_MARKER}={timestamp}"
@@ -282,14 +270,15 @@ async def schedule_sleep_at(when: datetime) -> tuple[bool, str]:
             stderr=asyncio.subprocess.DEVNULL,
         )
     except Exception as e:  # noqa: BLE001
-        return True, (
-            f"💤 Sleep programado *{when.strftime('%Y-%m-%d %H:%M')}* (suave).\n"
-            f"⚠️ Forzado falló: {e}. Si hay actividad la Mac puede no dormir."
-        )
+        return False, f"❌ Sleep falló: {e}"
+
+    horas = delay // 3600
+    minutos = (delay % 3600) // 60
+    delta_str = f"{horas}h {minutos}m" if horas else f"{minutos} min"
 
     return True, (
-        f"💤 Sleep *FORZADO* programado para *{when.strftime('%Y-%m-%d %H:%M')}*.\n"
-        "_Va a dormir aunque haya actividad (mouse, SSH, etc)._"
+        f"💤 Sleep *FORZADO* programado para *{when.strftime('%Y-%m-%d %H:%M')}*\n"
+        f"_(en {delta_str}, ignora actividad del usuario)_"
     )
 
 

@@ -79,6 +79,12 @@ from system import (
     schedule_wake_at,
     sleep_mac,
 )
+from builder import ejecutar_architect, ejecutar_builder
+from perfex_deploy import desplegar_modulo_perfex
+
+WORK_DIR = Path(os.getenv("WORK_DIR", str(Path.home() / "work"))).expanduser()
+ARCHITECT_TIMEOUT = int(os.getenv("ARCHITECT_TIMEOUT_SECONDS", "1800"))
+BUILDER_TIMEOUT = int(os.getenv("BUILDER_TIMEOUT_SECONDS", "2700"))
 
 # ─────────────────────────────────────────────────────────────────────────
 # Config
@@ -365,6 +371,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _flow_recibir_schedule(update, user_id, texto)
         return
 
+    if estado == "awaiting_arq_approval":
+        low = texto.lower().strip()
+        if low in ("aprobar", "aprueba", "approve", "ok", "si", "sí", "yes", "go"):
+            await _flow_aprobar_arquitectura(update, user_id, st)
+            return
+        if low in ("rechazar", "no", "abortar", "cancel", "cancelar"):
+            await store.set(user_id, estado="idle")
+            await _send(update, "❌ Arquitectura rechazada. Proyecto vuelve a idle.", reply_markup=MAIN_KEYBOARD)
+            return
+        await _send(
+            update,
+            "Estoy esperando `aprobar` o `rechazar` para la arquitectura. "
+            "Mandá una de esas dos palabras.",
+        )
+        return
+
+    if estado in ("building_architect", "building_code", "deploying"):
+        await _send(
+            update,
+            f"⏳ Ya hay una tarea de Fase 2 en curso (`{estado}`).\n"
+            "Esperá que termine — te aviso cuando esté listo.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
     # idle o done: auto-detect de patrones sleep/wake antes de ir a Claude libre
     if _SCHEDULE_AUTODETECT.match(texto):
         log.info("auto-detect schedule pattern en texto: %s", texto[:50])
@@ -468,6 +499,170 @@ async def cmd_sistema(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "⚙️ *Sistema*\n\nElegí una acción de la Mac:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=sistema_inline_keyboard(),
+    )
+
+
+async def cmd_arrancar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/arrancar <slug>` — arranca la construcción del producto en Fase 2.
+
+    Flujo:
+      1. Lee brief.md del proyecto
+      2. Invoca architect (Claude leyendo brief + skills)
+      3. Pide aprobación de ARQUITECTURA.md
+      4. Invoca builder
+      5. Despliega en stack apropiado
+    """
+    user_id = update.effective_user.id
+    if not _is_allowed(user_id):
+        return
+    args = context.args or []
+    if not args:
+        await _send(
+            update,
+            "Uso: `/arrancar <slug>`\n\n"
+            "Ejemplo: `/arrancar comiss-flex`\n\n"
+            "Listá briefs con `/proyectos` y elegí uno con brief.md generado.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    slug = args[0].strip()
+    await _flow_arrancar(update, user_id, slug)
+
+
+async def _flow_arrancar(update: Update, user_id: int, slug: str) -> None:
+    """Pipeline Fase 2 completo para un slug dado."""
+    proyecto_dir = PROYECTOS_DIR / slug
+    brief_path = proyecto_dir / "brief.md"
+    intake_path = proyecto_dir / "intake.json"
+
+    if not proyecto_dir.exists():
+        await _send(update, f"❌ No existe el proyecto `{slug}` en {PROYECTOS_DIR}", parse_mode=ParseMode.MARKDOWN)
+        return
+    if not brief_path.exists():
+        await _send(
+            update,
+            f"❌ Falta `brief.md` en `{proyecto_dir}`.\n\n"
+            f"El proyecto está en estado *awaiting_answers* o se canceló sin consolidar.\n"
+            f"Usá `/nuevo` para arrancarlo de cero, o respondé las preguntas pendientes.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Detectar stack del intake.json
+    stack = "Perfex"  # default
+    if intake_path.exists():
+        try:
+            intake_data = json.loads(intake_path.read_text(encoding="utf-8"))
+            stack = intake_data.get("stack_detectado", "Perfex")
+        except Exception:  # noqa: BLE001
+            pass
+
+    await store.set(
+        user_id,
+        estado="building_architect",
+        proyecto_slug=slug,
+        proyecto_dir=str(proyecto_dir),
+        stack_detectado=stack,
+    )
+
+    await _send(
+        update,
+        f"🚀 *Arrancando construcción de `{slug}`*\n\n"
+        f"Stack: *{stack}*\n"
+        f"Carpeta: `{proyecto_dir}`\n\n"
+        f"⏳ Invocando architect…\n"
+        f"_Esto puede tardar 5-15 min. No cierres Telegram, te aviso cuando termine._",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    # Ejecutar architect
+    try:
+        ok, msg = await ejecutar_architect(
+            proyecto_dir=proyecto_dir,
+            stack=stack,
+            claude_bin=CLAUDE_BIN,
+            timeout=ARCHITECT_TIMEOUT,
+        )
+    except Exception as e:  # noqa: BLE001
+        await store.set(user_id, estado="idle")
+        await _send(update, f"❌ Architect crasheó: {e}")
+        return
+
+    if not ok:
+        await store.set(user_id, estado="idle")
+        await _send(update, f"❌ Architect falló: {msg[:500]}")
+        return
+
+    arq_path = Path(msg)
+    arq_size = arq_path.stat().st_size
+    arq_preview = arq_path.read_text(encoding="utf-8")[:1500]
+
+    await store.set(user_id, estado="awaiting_arq_approval")
+
+    await _send(
+        update,
+        f"✅ *ARQUITECTURA.md generada* ({arq_size:,} bytes)\n\n"
+        f"Preview:\n```\n{arq_preview}\n```\n\n"
+        f"Mandame `aprobar` para continuar al builder, o `rechazar` para abortar.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def _flow_aprobar_arquitectura(update: Update, user_id: int, st: dict) -> None:
+    """Continúa Fase 2 después que el usuario aprobó la arquitectura."""
+    slug = st.get("proyecto_slug")
+    stack = st.get("stack_detectado") or "Perfex"
+    proyecto_dir = Path(st["proyecto_dir"])
+    work_dir = WORK_DIR / slug
+
+    await store.set(user_id, estado="building_code")
+    await _send(
+        update,
+        f"🔨 *Builder en curso para `{slug}`*\n\n"
+        f"Esto tarda 10-30 min. Te aviso cuando termine.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    try:
+        ok, msg, n_files = await ejecutar_builder(
+            proyecto_dir=proyecto_dir,
+            work_dir=work_dir,
+            stack=stack,
+            claude_bin=CLAUDE_BIN,
+            timeout=BUILDER_TIMEOUT,
+        )
+    except Exception as e:  # noqa: BLE001
+        await store.set(user_id, estado="idle")
+        await _send(update, f"❌ Builder crasheó: {e}")
+        return
+
+    if not ok:
+        await store.set(user_id, estado="idle")
+        await _send(update, f"❌ Builder falló: {msg[:500]}")
+        return
+
+    # Deploy
+    await store.set(user_id, estado="deploying")
+    await _send(update, f"✅ Builder OK — *{n_files} archivos* generados en `{work_dir}`\n\n🚀 Desplegando…", parse_mode=ParseMode.MARKDOWN)
+
+    try:
+        if stack == "Perfex":
+            ok_d, msg_d = await desplegar_modulo_perfex(slug, work_dir)
+        else:
+            ok_d, msg_d = False, f"Deploy para stack {stack} no implementado todavía"
+    except Exception as e:  # noqa: BLE001
+        await store.set(user_id, estado="idle")
+        await _send(update, f"❌ Deploy crasheó: {e}")
+        return
+
+    await store.set(user_id, estado="ready")
+    prefix = "✅" if ok_d else "⚠️"
+    await _send(
+        update,
+        f"{prefix} *Fase 2 completada para `{slug}`*\n\n{msg_d}",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -770,6 +965,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sistema", cmd_sistema))
     app.add_handler(CommandHandler("health", cmd_sistema))  # alias rápido
     app.add_handler(CommandHandler("programar", cmd_programar))
+    app.add_handler(CommandHandler("arrancar", cmd_arrancar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
 

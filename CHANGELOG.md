@@ -2,6 +2,67 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.9.0] - 2026-06-05
+
+### Added — Fase 2: `/arrancar <slug>` (architect + builder + deploy)
+
+El core del orquestador. Toma un brief consolidado y construye el producto
+real, con un gate de aprobación manual de la arquitectura por seguridad.
+
+#### Pipeline
+
+```
+/arrancar comiss-flex
+  ↓
+1. Lee ~/proyectos/comiss-flex/brief.md
+2. Detecta stack del intake.json
+3. Estado: building_architect
+4. Llama Claude con architect prompt + skills team-{stack}
+5. Genera ARQUITECTURA.md
+6. Estado: awaiting_arq_approval
+7. (usuario manda "aprobar" o "rechazar")
+8. Estado: building_code
+9. Llama Claude con builder prompt + skills + ARQUITECTURA.md
+10. Genera N archivos en ~/work/<slug>/
+11. Estado: deploying
+12. perfex_deploy: copia a ~/www/perfex/modules/<slug>/ + activa en tbloptions
+13. Estado: ready
+14. Devuelve URL de admin Perfex
+```
+
+#### Componentes nuevos
+
+- `builder.py`:
+  - `team_repo_for_stack(stack)` mapea stack → ~/orquestador/claude-team-{X}/
+  - `read_skills_concat(stack)` lee todos los SKILL.md del team-{stack}
+  - `read_agent_file(stack, kind)` lee el .md del agent (architect/builder/qa)
+  - `ejecutar_architect(proyecto_dir, stack)` → ARQUITECTURA.md
+  - `ejecutar_builder(proyecto_dir, work_dir, stack)` → genera archivos
+  - `parse_file_blocks(text)` parsea bloques `<FILE path="...">...</FILE>`
+  - Timeouts default: architect 30 min, builder 45 min
+- `perfex_deploy.py`:
+  - `copy_module_to_perfex(slug, work_dir)` copy + permisos
+  - `activate_module_in_perfex(slug)` UPDATE tbloptions::active_modules JSON
+  - `desplegar_modulo_perfex(slug, work_dir)` pipeline completo
+
+#### Cambios en bot.py
+
+- `/arrancar <slug>` nuevo comando
+- `_flow_arrancar` ejecuta architect
+- `_flow_aprobar_arquitectura` ejecuta builder + deploy
+- handle_text intercepta "aprobar"/"rechazar" cuando estado=awaiting_arq_approval
+- Bloqueo de inputs durante building_*/deploying
+- Nuevas env vars: `WORK_DIR`, `ARCHITECT_TIMEOUT_SECONDS`, `BUILDER_TIMEOUT_SECONDS`
+
+### Prerrequisito
+
+Los 6 repos `claude-team-*` deben estar clonados en `~/orquestador/`:
+```bash
+cd ~/orquestador && for r in claude-team-{core,perfex,ci3,node,laravel,wp}; do
+  git clone https://github.com/ticempresarial/$r.git
+done
+```
+
 ## [0.8.0] - 2026-06-05
 
 ### Added — Apagado total + auto-encendido (`apagar` y `prender`)

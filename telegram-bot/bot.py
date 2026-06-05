@@ -55,7 +55,16 @@ from keyboards import (
 )
 from slugify import slugify
 from state import StateStore
-from system import health_summary, restart_mac, sleep_mac
+from system import (
+    cancel_all_schedules,
+    health_summary,
+    list_schedules,
+    parse_schedule_input,
+    restart_mac,
+    schedule_sleep_at,
+    schedule_wake_at,
+    sleep_mac,
+)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Config
@@ -338,8 +347,65 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _flow_recibir_respuestas(update, user_id, texto, st)
         return
 
+    if estado == "awaiting_schedule_input":
+        await _flow_recibir_schedule(update, user_id, texto)
+        return
+
     # idle o done => modo libre Fase 0
     await _flow_libre(update, texto)
+
+
+async def _flow_recibir_schedule(update: Update, user_id: int, texto: str) -> None:
+    """Procesa texto cuando el usuario está en estado awaiting_schedule_input."""
+    parsed = parse_schedule_input(texto)
+    action = parsed.get("action")
+
+    if action == "error":
+        await _send(
+            update,
+            f"❌ {parsed.get('error')}\n\nEjemplos:\n"
+            "  `sleep 02:00`\n"
+            "  `sleep 23:30 wake 07:00`\n"
+            "  `wake 09:00`\n\n"
+            "O `❌ Cancelar` para abortar.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if action == "cancel":
+        ok, msg = await cancel_all_schedules()
+        await store.set(user_id, estado="idle")
+        await _send(update, msg, reply_markup=MAIN_KEYBOARD)
+        return
+
+    if action == "list":
+        msg = await list_schedules()
+        await store.set(user_id, estado="idle")
+        await _send(update, msg, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+        return
+
+    if action == "schedule":
+        sleep_at = parsed.get("sleep_at")
+        wake_at = parsed.get("wake_at")
+        replies: list[str] = []
+        ok_overall = True
+        if sleep_at:
+            ok, m = await schedule_sleep_at(sleep_at)
+            replies.append(m)
+            ok_overall = ok_overall and ok
+        if wake_at:
+            ok, m = await schedule_wake_at(wake_at)
+            replies.append(m)
+            ok_overall = ok_overall and ok
+        prefix = "✅" if ok_overall else "⚠️"
+        await store.set(user_id, estado="idle")
+        await _send(
+            update,
+            f"{prefix} Programación:\n\n" + "\n".join(replies),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
 
 
 async def _despachar_boton(
@@ -374,6 +440,30 @@ async def cmd_sistema(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=sistema_inline_keyboard(),
     )
+
+
+async def cmd_programar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando texto directo: /programar sleep 02:00 wake 07:00."""
+    user_id = update.effective_user.id
+    if not _is_allowed(user_id):
+        return
+    args = " ".join(context.args or []).strip()
+    if not args:
+        # Sin args: pasamos al modo interactivo
+        await store.set(user_id, estado="awaiting_schedule_input")
+        await _send(
+            update,
+            "📅 *Programar sleep / wake*\n\n"
+            "Mandame en UN mensaje:\n"
+            "  `sleep 02:00`\n"
+            "  `sleep 23:30 wake 07:00`\n"
+            "  `wake 09:00`\n\n"
+            "Si la hora ya pasó hoy, va para mañana automáticamente.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    # Con args: procesar directo
+    await _flow_recibir_schedule(update, user_id, args)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -435,6 +525,46 @@ async def _handle_sys_callback(query, data: str) -> None:
     if accion == "cancel":
         await query.message.reply_text("Cancelado.")
         return
+
+    # Programación de sleep/wake (sub-acciones prog:ask / list / cancel)
+    if accion == "prog":
+        sub = parts[2] if len(parts) >= 3 else ""
+        user_id = query.from_user.id
+
+        if sub == "ask":
+            await store.set(user_id, estado="awaiting_schedule_input")
+            await query.message.reply_text(
+                "📅 *Programar sleep / wake*\n\n"
+                "Mandame en UN mensaje:\n"
+                "  `sleep 02:00`              _solo sleep_\n"
+                "  `sleep 23:30 wake 07:00`   _sleep + wake_\n"
+                "  `wake 09:00`               _solo wake_\n\n"
+                "Si la hora ya pasó hoy, se programa para mañana.\n"
+                "Si `wake` es antes de `sleep`, se asume al día siguiente.\n\n"
+                "También aceptado: `cancelar`, `ver`.\n\n"
+                "O escribí `❌ Cancelar` desde el teclado para abortar.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if sub == "list":
+            msg = await list_schedules()
+            await query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            return
+
+        if sub == "cancel":
+            sub2 = parts[3] if len(parts) >= 4 else ""
+            if sub2 == "ask":
+                # sistema_confirmar_keyboard("prog:cancel") genera "sys:prog:cancel:do"
+                await query.message.reply_text(
+                    "🗑️ ¿Cancelar TODAS las programaciones?",
+                    reply_markup=sistema_confirmar_keyboard("prog:cancel"),
+                )
+                return
+            if sub2 == "do":
+                ok, msg = await cancel_all_schedules()
+                await query.message.reply_text(msg)
+                return
 
     # Sleep / Restart con confirmación
     if accion in ("sleep", "restart"):
@@ -608,6 +738,7 @@ def main() -> None:
     app.add_handler(CommandHandler("verbrief", cmd_verbrief))
     app.add_handler(CommandHandler("sistema", cmd_sistema))
     app.add_handler(CommandHandler("health", cmd_sistema))  # alias rápido
+    app.add_handler(CommandHandler("programar", cmd_programar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
 

@@ -2,6 +2,42 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.7.0] - 2026-06-05
+
+### Added — Programación de sleep / wake desde Telegram
+
+- `telegram-bot/system.py`:
+  - `parse_schedule_input(text)` — parsea `sleep 02:00`, `sleep 23:30 wake 07:00`,
+    `wake 09:00`, `cancelar`, `ver`. Si la hora ya pasó hoy, va para mañana.
+    Si wake es antes de sleep, asume wake al día siguiente.
+  - `schedule_sleep_at(when)` → `sudo pmset schedule sleep "MM/dd/yy HH:mm:ss"`
+  - `schedule_wake_at(when)` → `sudo pmset schedule wakeorpoweron ...`
+  - `cancel_all_schedules()` → `sudo pmset schedule cancelall`
+  - `list_schedules()` → `pmset -g sched` (sin sudo)
+- `telegram-bot/keyboards.py` — `sistema_inline_keyboard` ahora incluye:
+  - 📅 Programar sleep/wake
+  - 📋 Ver programación
+  - 🗑️ Cancelar todas
+- `telegram-bot/bot.py`:
+  - Nuevo estado `awaiting_schedule_input` por user_id
+  - Handler `_flow_recibir_schedule` que parsea el texto del usuario
+  - Callbacks `sys:prog:ask`, `sys:prog:list`, `sys:prog:cancel:ask|do`
+  - Comando texto directo: `/programar sleep 02:00 wake 07:00`
+  - `/programar` sin args → entra al modo interactivo
+
+### Requerido adicional (sudoers)
+
+Para que `/programar` funcione sin pedir password, agregar pmset al sudoers
+config junto con shutdown:
+
+```bash
+echo "datacole ALL=(ALL) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown, /usr/bin/pmset" \
+  | sudo tee /etc/sudoers.d/datacole-power \
+  && sudo chmod 0440 /etc/sudoers.d/datacole-power
+```
+
+`list_schedules` y `parse_schedule_input` funcionan sin sudo.
+
 ## [0.6.0] - 2026-06-05
 
 ### Added — Power management + Health desde Telegram

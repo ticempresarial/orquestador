@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 log = logging.getLogger("orquestador.system")
@@ -134,6 +136,174 @@ async def _http_status(url: str, timeout_s: int = 5) -> str:
     if code != 0:
         return "down"
     return stdout or "?"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Programación de sleep / wake (pmset schedule)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+_TIME_RE = re.compile(r"\b(\d{1,2}):?(\d{2})\b")
+_HHMM_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+
+def _parse_hhmm(text: str) -> tuple[int, int] | None:
+    """'02:00' '23:30' '2:00' → (h, m). None si inválido."""
+    m = _HHMM_RE.match(text)
+    if not m:
+        return None
+    h, mn = int(m.group(1)), int(m.group(2))
+    if 0 <= h <= 23 and 0 <= mn <= 59:
+        return h, mn
+    return None
+
+
+def _at_time(h: int, m: int, prefer_future: bool = True) -> datetime:
+    """Devuelve datetime hoy a HH:MM. Si ya pasó y prefer_future, suma 1 día."""
+    now = datetime.now()
+    when = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if prefer_future and when <= now:
+        when += timedelta(days=1)
+    return when
+
+
+def parse_schedule_input(text: str) -> dict:
+    """Parsea '/programar sleep 02:00 wake 07:00' o similares.
+
+    Acepta:
+      'sleep 02:00'
+      'sleep 23:30 wake 07:00'
+      'wake 09:00'
+      'cancel' / 'cancelar' / 'cancel all'
+      'status' / 'ver' / 'lista'
+
+    Devuelve dict con keys:
+      'action': 'schedule' | 'cancel' | 'list' | 'error'
+      'sleep_at': datetime | None
+      'wake_at':  datetime | None
+      'error':    str | None  (si action == 'error')
+    """
+    s = text.strip().lower()
+    s = s.replace("/programar", "").strip()
+
+    if not s:
+        return {"action": "error", "error": "Vacío. Usá: `sleep HH:MM` o `wake HH:MM`."}
+
+    if s in ("cancel", "cancelar", "cancel all", "cancelar todas", "clear"):
+        return {"action": "cancel", "sleep_at": None, "wake_at": None, "error": None}
+
+    if s in ("status", "ver", "lista", "list", "schedule"):
+        return {"action": "list", "sleep_at": None, "wake_at": None, "error": None}
+
+    sleep_at = None
+    wake_at = None
+
+    # Match 'sleep HH:MM'
+    msleep = re.search(r"sleep\s+(\d{1,2}:\d{2})", s)
+    if msleep:
+        hm = _parse_hhmm(msleep.group(1))
+        if hm is None:
+            return {"action": "error", "error": f"Hora inválida tras 'sleep': {msleep.group(1)}"}
+        sleep_at = _at_time(*hm)
+
+    # Match 'wake HH:MM' (acepta despertar/wakeup)
+    mwake = re.search(r"(?:wake|wakeup|despertar)\s+(\d{1,2}:\d{2})", s)
+    if mwake:
+        hm = _parse_hhmm(mwake.group(1))
+        if hm is None:
+            return {"action": "error", "error": f"Hora inválida tras 'wake': {mwake.group(1)}"}
+        wake_at = _at_time(*hm)
+
+    # Si no aparece 'sleep' ni 'wake' pero hay un solo HH:MM, asumir sleep
+    if sleep_at is None and wake_at is None:
+        only = _parse_hhmm(s)
+        if only is not None:
+            sleep_at = _at_time(*only)
+
+    if sleep_at is None and wake_at is None:
+        return {
+            "action": "error",
+            "error": "No detecté hora válida. Ejemplos: `sleep 02:00`, `wake 07:00`, `sleep 23:30 wake 06:30`.",
+        }
+
+    # Si hay ambos y wake_at <= sleep_at, asumir wake al día siguiente
+    if sleep_at and wake_at and wake_at <= sleep_at:
+        wake_at += timedelta(days=1)
+
+    return {"action": "schedule", "sleep_at": sleep_at, "wake_at": wake_at, "error": None}
+
+
+def _pmset_timestamp(dt: datetime) -> str:
+    """Formato pmset: 'MM/dd/yy HH:mm:ss'."""
+    return dt.strftime("%m/%d/%y %H:%M:%S")
+
+
+async def schedule_sleep_at(when: datetime) -> tuple[bool, str]:
+    """sudo pmset schedule sleep 'MM/dd/yy HH:mm:ss'."""
+    ts = _pmset_timestamp(when)
+    code, _, stderr = await _run(
+        ["sudo", "-n", "pmset", "schedule", "sleep", ts], timeout=10
+    )
+    if code != 0:
+        if "password" in stderr.lower() or "sudo" in stderr.lower():
+            return False, "❌ sudo pidió password. Configurá sudoers para pmset (ver README)."
+        return False, stderr or f"pmset exit {code}"
+    return True, f"💤 Sleep programado para *{when.strftime('%Y-%m-%d %H:%M')}*"
+
+
+async def schedule_wake_at(when: datetime) -> tuple[bool, str]:
+    """sudo pmset schedule wakeorpoweron 'MM/dd/yy HH:mm:ss'."""
+    ts = _pmset_timestamp(when)
+    code, _, stderr = await _run(
+        ["sudo", "-n", "pmset", "schedule", "wakeorpoweron", ts], timeout=10
+    )
+    if code != 0:
+        if "password" in stderr.lower() or "sudo" in stderr.lower():
+            return False, "❌ sudo pidió password. Configurá sudoers para pmset (ver README)."
+        return False, stderr or f"pmset exit {code}"
+    return True, f"⏰ Wake programado para *{when.strftime('%Y-%m-%d %H:%M')}*"
+
+
+async def cancel_all_schedules() -> tuple[bool, str]:
+    """sudo pmset schedule cancelall."""
+    code, _, stderr = await _run(
+        ["sudo", "-n", "pmset", "schedule", "cancelall"], timeout=10
+    )
+    if code != 0:
+        if "password" in stderr.lower() or "sudo" in stderr.lower():
+            return False, "❌ sudo pidió password. Configurá sudoers para pmset."
+        return False, stderr or f"pmset exit {code}"
+    return True, "🗑️ Todas las programaciones canceladas."
+
+
+async def list_schedules() -> str:
+    """pmset -g sched (no requiere sudo)."""
+    code, stdout, stderr = await _run(["pmset", "-g", "sched"], timeout=5)
+    if code != 0:
+        return f"❌ No pude listar schedule: {stderr or 'error'}"
+
+    lines = stdout.strip().split("\n") if stdout else []
+    if not lines or len(lines) <= 1:
+        return "📅 Sin programaciones activas."
+
+    # pmset -g sched output:
+    #   Repeating power events:
+    #     wakeorpoweron at 07:00:00 every day
+    #   Scheduled power events:
+    #     [0]  wakeorpoweron at 06/06/26 07:00:00
+    #     [1]  sleep at 06/06/26 02:00:00
+    out = ["📅 *Programaciones activas*", ""]
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        out.append(f"  {line}")
+    return "\n".join(out)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Health
+# ─────────────────────────────────────────────────────────────────────────
 
 
 async def health_summary() -> str:

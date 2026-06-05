@@ -73,6 +73,11 @@ def sistema_inline_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("💤 Sleep", callback_data="sys:sleep:ask"),
             InlineKeyboardButton("🔄 Restart", callback_data="sys:restart:ask"),
         ],
+        [InlineKeyboardButton("📅 Programar sleep/wake", callback_data="sys:prog:ask")],
+        [
+            InlineKeyboardButton("📋 Ver programación", callback_data="sys:prog:list"),
+            InlineKeyboardButton("🗑️ Cancelar todas", callback_data="sys:prog:cancel:ask"),
+        ],
     ])
 
 

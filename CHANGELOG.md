@@ -2,6 +2,51 @@
 
 Sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y [SemVer](https://semver.org/).
 
+## [0.8.0] - 2026-06-05
+
+### Added — Apagado total + auto-encendido (`apagar` y `prender`)
+
+El sleep (`sleep HH:MM`) es **suspensión**: ~5W consumo, despierta rápido,
+preserva estado. Útil para pausar la Mac un rato.
+
+Para **ahorro real de energía** (uso nocturno), ahora podés apagar la Mac
+COMPLETAMENTE (0W) y programar el encendido automático. macOS M2 mantiene
+un RTC interno que puede disparar el power-on aunque la Mac esté apagada.
+
+### Sintaxis nueva
+
+```
+apagar 02:00 prender 07:00     # shutdown + auto-power-on
+apagar 23:00                   # shutdown sin auto-power (manual prender)
+prender 07:00                  # solo programar encendido
+shutdown 23:00 poweron 08:00   # alias en inglés
+```
+
+Las palabras clave aceptadas:
+- **Apagar**: `apagar`, `apaga`, `shutdown`, `off`, `poweroff`
+- **Encender**: `prender`, `enciende`, `encender`, `poweron`, `power`, `wake`, `despertar`
+
+### Cambios técnicos
+
+- `system.py`:
+  - `schedule_shutdown_at(when)` — background bash + `sudo shutdown -h now`
+    con marker `orquestador-force-shutdown=<ts>`.
+  - `schedule_poweron_at(when)` — `sudo pmset schedule poweron`.
+  - `parse_schedule_input` ahora devuelve también `shutdown_at`.
+  - `cancel_all_schedules` mata también los background de shutdown.
+  - `list_schedules` muestra schedules pmset + sleeps + shutdowns.
+- `bot.py`:
+  - `_flow_recibir_schedule` ejecuta sleep o shutdown según parsing.
+  - Si hay shutdown + wake → wake se usa como poweron (Mac apagada
+    necesita poweron, no wake).
+  - Auto-detect regex ampliado para apagar/prender/shutdown/poweron.
+
+### Caveat M2
+
+`pmset schedule poweron` funciona en M2 Mac Mini con Apple Silicon. La
+Mac debe estar conectada a power (no batería). Verificado en Apple M2
+con macOS Sequoia 15.5.
+
 ## [0.7.3] - 2026-06-05
 
 ### Fixed — Schedules vencidos ya no dejan residuo

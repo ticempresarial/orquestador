@@ -46,7 +46,9 @@ from intake import (
 # en vez de pasarlo a Claude libre. Cubre "sleep HH:MM", "wake HH:MM",
 # "cancelar", "ver", combos.
 _SCHEDULE_AUTODETECT = _re.compile(
-    r"^\s*(sleep|wake|wakeup|despertar|cancelar|cancel|ver|status|list)\b",
+    r"^\s*(sleep|wake|wakeup|despertar|prender|enciende|encender|poweron|power|"
+    r"apagar|apaga|shutdown|off|poweroff|"
+    r"cancelar|cancel|ver|status|list)\b",
     _re.IGNORECASE,
 )
 from keyboards import (
@@ -71,6 +73,8 @@ from system import (
     list_schedules,
     parse_schedule_input,
     restart_mac,
+    schedule_poweron_at,
+    schedule_shutdown_at,
     schedule_sleep_at,
     schedule_wake_at,
     sleep_mac,
@@ -403,14 +407,23 @@ async def _flow_recibir_schedule(update: Update, user_id: int, texto: str) -> No
     if action == "schedule":
         sleep_at = parsed.get("sleep_at")
         wake_at = parsed.get("wake_at")
+        shutdown_at = parsed.get("shutdown_at")
         replies: list[str] = []
         ok_overall = True
         if sleep_at:
             ok, m = await schedule_sleep_at(sleep_at)
             replies.append(m)
             ok_overall = ok_overall and ok
+        if shutdown_at:
+            ok, m = await schedule_shutdown_at(shutdown_at)
+            replies.append(m)
+            ok_overall = ok_overall and ok
         if wake_at:
-            ok, m = await schedule_wake_at(wake_at)
+            # wakeorpoweron sirve tanto para wake (sleep) como para poweron (shutdown)
+            if shutdown_at:
+                ok, m = await schedule_poweron_at(wake_at)
+            else:
+                ok, m = await schedule_wake_at(wake_at)
             replies.append(m)
             ok_overall = ok_overall and ok
         prefix = "✅" if ok_overall else "⚠️"
@@ -469,12 +482,12 @@ async def cmd_programar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await store.set(user_id, estado="awaiting_schedule_input")
         await _send(
             update,
-            "📅 *Programar sleep / wake*\n\n"
+            "📅 *Programar sleep / apagar*\n\n"
             "Mandame en UN mensaje:\n"
-            "  `sleep 02:00`\n"
-            "  `sleep 23:30 wake 07:00`\n"
-            "  `wake 09:00`\n\n"
-            "Si la hora ya pasó hoy, va para mañana automáticamente.",
+            "  `sleep 02:00`                    _suspender_\n"
+            "  `sleep 23:30 wake 07:00`         _suspender + despertar_\n"
+            "  `apagar 02:00 prender 07:00`     _apagar TOTAL + auto-encendido_\n"
+            "  `prender 07:00`                  _solo programar encendido_",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -550,15 +563,17 @@ async def _handle_sys_callback(query, data: str) -> None:
         if sub == "ask":
             await store.set(user_id, estado="awaiting_schedule_input")
             await query.message.reply_text(
-                "📅 *Programar sleep / wake*\n\n"
-                "Mandame en UN mensaje:\n"
-                "  `sleep 02:00`              _solo sleep_\n"
-                "  `sleep 23:30 wake 07:00`   _sleep + wake_\n"
-                "  `wake 09:00`               _solo wake_\n\n"
-                "Si la hora ya pasó hoy, se programa para mañana.\n"
-                "Si `wake` es antes de `sleep`, se asume al día siguiente.\n\n"
-                "También aceptado: `cancelar`, `ver`.\n\n"
-                "O escribí `❌ Cancelar` desde el teclado para abortar.",
+                "📅 *Programar sleep / apagar*\n\n"
+                "*Sleep (suspensión, ~5W, despierta rápido):*\n"
+                "  `sleep 02:00`             _solo sleep_\n"
+                "  `sleep 23:30 wake 07:00`  _sleep + wake_\n\n"
+                "*Apagado total (0W, ahorro real, vuelve con power-on):*\n"
+                "  `apagar 02:00 prender 07:00`  _shutdown + auto-encendido_\n"
+                "  `apagar 23:00`                _shutdown sin retorno autom._\n\n"
+                "*Solo encender (sin apagar primero):*\n"
+                "  `prender 07:00`           _power-on programado_\n\n"
+                "Si la hora ya pasó hoy, va para mañana.\n\n"
+                "También aceptado: `cancelar`, `ver`.",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
